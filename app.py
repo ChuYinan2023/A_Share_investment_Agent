@@ -95,7 +95,49 @@ if st.sidebar.button("开始分析", type="primary"):
                     st.subheader("分析推理")
                     st.write(result_json["reasoning"])
                 
-                # 显示完整 JSON
+                # 解析JSON结果
+                st.subheader("📈 交易建议")
+                st.write(result_json.get("trading_decision", "无交易建议"))
+                
+                # 生成中文简报
+                try:
+                    # 导入OpenRouter API
+                    from src.tools.openrouter_config import get_chat_completion
+                    
+                    # 准备简报提示词
+                    prompt = f"""
+                    请根据以下A股投资分析结果，生成一份格式规范的中文投资简报。
+                    简报应包括：市场概况、基本面分析、技术面分析、投资建议和风险提示。
+                    使用专业但通俗易懂的语言，适合普通投资者阅读。
+                    
+                    分析数据：
+                    {json.dumps(result_json, ensure_ascii=False, indent=2)}
+                    """
+                    
+                    # 调用API生成简报
+                    with st.spinner("正在生成中文简报..."):
+                        messages = [{"role": "user", "content": prompt}]
+                        report = get_chat_completion(messages)
+                        
+                        # 显示简报
+                        st.subheader("📊 中文投资简报")
+                        st.markdown(report)
+                        
+                        # 提供下载选项
+                        report_text = f"# {result_json.get('ticker', '股票')}投资简报\n\n"
+                        report_text += f"生成日期：{datetime.now().strftime('%Y-%m-%d')}\n\n"
+                        report_text += report
+                        
+                        st.download_button(
+                            label="下载简报",
+                            data=report_text,
+                            file_name=f"{result_json.get('ticker', 'stock')}_report_{datetime.now().strftime('%Y%m%d')}.md",
+                            mime="text/markdown"
+                        )
+                except Exception as e:
+                    st.error(f"生成简报时出错: {str(e)}")
+                    
+                # 显示完整JSON结果
                 with st.expander("查看完整分析结果"):
                     st.json(result_json)
                     
