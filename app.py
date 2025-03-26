@@ -64,7 +64,15 @@ if st.sidebar.button("开始分析", type="primary"):
             # 显示结果
             st.success("分析完成！")
             
+            # 预处理结果，移除可能的markdown代码块标记
+            if result.startswith("```json"):
+                result = result.replace("```json", "", 1)
+            if result.endswith("```"):
+                result = result[:-3]
+            result = result.strip()
+            
             try:
+                # 尝试解析为JSON
                 result_json = json.loads(result)
                 
                 # 创建结果展示区
@@ -100,7 +108,37 @@ if st.sidebar.button("开始分析", type="primary"):
                     st.json(result_json)
                     
             except json.JSONDecodeError:
-                st.text_area("分析结果", result, height=300)
+                # 如果不是JSON格式，直接显示文本结果
+                st.subheader("分析结果")
+                st.markdown(result)
+                
+                # 添加结果解释区域
+                st.subheader("如何使用本工具")
+                st.markdown("""
+                1. 在侧边栏输入股票代码（如：601318 为中国平安）
+                2. 选择分析的时间范围
+                3. 设置初始资金和持仓
+                4. 点击"开始分析"按钮
+                5. 查看系统生成的投资建议
+                """)
+                
+                # 添加分析结果说明
+                st.subheader("分析结果说明")
+                st.markdown("""
+                - 投资建议：买入（Buy）、卖出（Sell）、持有（Hold）
+                - 交易量：建议交易的股票数量
+                - 置信度：分析师对此建议的置信程度
+                """)
+                
+                # 添加分析师信号说明
+                st.subheader("分析师信号说明")
+                st.markdown("""
+                - Market Data Analysis：提供市场数据和技术指标
+                - Fundamental Analysis：基于财务指标，提供基本面分析
+                - Sentiment Analysis：基于市场情绪，提供情绪分析
+                - Valuation Analysis：估值分析，提供价值投资视角
+                - Risk Management：风险管理，评估投资风险
+                """)
                 
         except Exception as e:
             st.error(f"分析过程中出现错误: {str(e)}")
@@ -133,4 +171,4 @@ with st.expander("使用说明"):
 
 # 添加页脚
 st.sidebar.markdown("---")
-st.sidebar.caption("© 2025 A股投资分析代理")
+st.sidebar.caption(" 2025 A股投资分析代理")
