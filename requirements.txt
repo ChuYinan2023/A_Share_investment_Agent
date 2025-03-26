@@ -1,0 +1,10 @@
+streamlit
+akshare
+bs4
+pandas
+requests
+langchain-core
+langchain
+backoff
+python-dotenv
+langgraph

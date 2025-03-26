@@ -16,7 +16,7 @@ from langchain_core.messages import HumanMessage
 import akshare as ak
 import pandas as pd
 
-from utils.output_logger import OutputLogger
+from src.utils.output_logger import OutputLogger
 import sys
 
 # Initialize output logging
