@@ -1,56 +1,95 @@
 from langchain_core.messages import HumanMessage
 from src.agents.state import AgentState, show_agent_reasoning, show_workflow_status
 import json
+from src.utils.logging_config import setup_logger
+
+# 设置日志记录
+logger = setup_logger('valuation_agent')
 
 
 def valuation_agent(state: AgentState):
-    """Responsible for valuation analysis"""
-    show_workflow_status("Valuation Agent")
+    """负责进行估值分析"""
+    logger.info("="*50)
+    logger.info("开始执行 估值分析师")
+    logger.info("="*50)
+    show_workflow_status("估值分析师")
     show_reasoning = state["metadata"]["show_reasoning"]
     data = state["data"]
     metrics = data["financial_metrics"][0]
     current_financial_line_item = data["financial_line_items"][0]
     previous_financial_line_item = data["financial_line_items"][1]
     market_cap = data["market_cap"]
+    symbol = data["ticker"]
+    
+    logger.info(f"正在分析股票: {symbol}")
+    logger.info(f"当前市值: {market_cap:,.2f}元")
+    logger.info(f"盈利增长率: {metrics['earnings_growth']:.2%}")
 
     reasoning = {}
 
     # Calculate working capital change
-    working_capital_change = (current_financial_line_item.get(
-        'working_capital') or 0) - (previous_financial_line_item.get('working_capital') or 0)
+    logger.info("计算营运资金变化...")
+    current_wc = current_financial_line_item.get('working_capital') or 0
+    previous_wc = previous_financial_line_item.get('working_capital') or 0
+    working_capital_change = current_wc - previous_wc
+    logger.info(f"当前营运资金: {current_wc:,.2f}元, 前期营运资金: {previous_wc:,.2f}元")
+    logger.info(f"营运资金变化: {working_capital_change:,.2f}元")
 
     # Owner Earnings Valuation (Buffett Method)
+    logger.info("开始进行所有者收益估值(巴菲特方法)...")
+    net_income = current_financial_line_item.get('net_income')
+    depreciation = current_financial_line_item.get('depreciation_and_amortization')
+    capex = current_financial_line_item.get('capital_expenditure')
+    
+    logger.info(f"净利润: {net_income:,.2f}元")
+    logger.info(f"折旧与摊销: {depreciation:,.2f}元")
+    logger.info(f"资本支出: {capex:,.2f}元")
+    
     owner_earnings_value = calculate_owner_earnings_value(
-        net_income=current_financial_line_item.get('net_income'),
-        depreciation=current_financial_line_item.get(
-            'depreciation_and_amortization'),
-        capex=current_financial_line_item.get('capital_expenditure'),
+        net_income=net_income,
+        depreciation=depreciation,
+        capex=capex,
         working_capital_change=working_capital_change,
         growth_rate=metrics["earnings_growth"],
         required_return=0.15,
         margin_of_safety=0.25
     )
+    logger.info(f"所有者收益估值结果: {owner_earnings_value:,.2f}元")
 
     # DCF Valuation
+    logger.info("开始进行现金流折现(DCF)估值...")
+    free_cash_flow = current_financial_line_item.get('free_cash_flow')
+    logger.info(f"自由现金流: {free_cash_flow:,.2f}元")
+    
     dcf_value = calculate_intrinsic_value(
-        free_cash_flow=current_financial_line_item.get('free_cash_flow'),
+        free_cash_flow=free_cash_flow,
         growth_rate=metrics["earnings_growth"],
         discount_rate=0.10,
         terminal_growth_rate=0.03,
         num_years=5,
     )
+    logger.info(f"DCF估值结果: {dcf_value:,.2f}元")
 
     # Calculate combined valuation gap (average of both methods)
+    logger.info("计算估值差距...")
     dcf_gap = (dcf_value - market_cap) / market_cap
     owner_earnings_gap = (owner_earnings_value - market_cap) / market_cap
     valuation_gap = (dcf_gap + owner_earnings_gap) / 2
+    
+    logger.info(f"DCF估值差距: {dcf_gap:.2%}")
+    logger.info(f"所有者收益估值差距: {owner_earnings_gap:.2%}")
+    logger.info(f"综合估值差距: {valuation_gap:.2%}")
 
+    logger.info("根据估值差距生成交易信号...")
     if valuation_gap > 0.10:  # Changed from 0.15 to 0.10 (10% undervalued)
         signal = 'bullish'
+        logger.info(f"估值信号: 看涨 (低估 {valuation_gap:.2%} > 10%)")
     elif valuation_gap < -0.20:  # Changed from -0.15 to -0.20 (20% overvalued)
         signal = 'bearish'
+        logger.info(f"估值信号: 看跌 (高估 {valuation_gap:.2%} < -20%)")
     else:
         signal = 'neutral'
+        logger.info(f"估值信号: 中性 (-20% < {valuation_gap:.2%} < 10%)")
 
     reasoning["dcf_analysis"] = {
         "signal": "bullish" if dcf_gap > 0.10 else "bearish" if dcf_gap < -0.20 else "neutral",
@@ -67,6 +106,8 @@ def valuation_agent(state: AgentState):
         "confidence": f"{abs(valuation_gap):.0%}",
         "reasoning": reasoning
     }
+    
+    logger.info(f"估值分析置信度: {abs(valuation_gap):.0%}")
 
     message = HumanMessage(
         content=json.dumps(message_content),
@@ -74,9 +115,12 @@ def valuation_agent(state: AgentState):
     )
 
     if show_reasoning:
-        show_agent_reasoning(message_content, "Valuation Analysis Agent")
+        show_agent_reasoning(message_content, "估值分析师")
 
-    show_workflow_status("Valuation Agent", "completed")
+    show_workflow_status("估值分析师", "completed")
+    logger.info("估值分析完成")
+    logger.info("="*50)
+    
     return {
         "messages": [message],
         "data": {
@@ -154,7 +198,7 @@ def calculate_owner_earnings_value(
         return max(value_with_safety_margin, 0)  # 确保不返回负值
 
     except Exception as e:
-        print(f"所有者收益计算错误: {e}")
+        logger.error(f"所有者收益计算错误: {e}")
         return 0
 
 
@@ -208,7 +252,7 @@ def calculate_intrinsic_value(
         return max(total_value, 0)  # 确保不返回负值
 
     except Exception as e:
-        print(f"DCF计算错误: {e}")
+        logger.error(f"DCF计算错误: {e}")
         return 0
 
 
@@ -217,15 +261,15 @@ def calculate_working_capital_change(
     previous_working_capital: float,
 ) -> float:
     """
-    Calculate the absolute change in working capital between two periods.
-    A positive change means more capital is tied up in working capital (cash outflow).
-    A negative change means less capital is tied up (cash inflow).
+    计算两个时期之间的营运资金变化。
+    正值表示更多资金被占用在营运资金中（现金流出）。
+    负值表示较少资金被占用（现金流入）。
 
     Args:
-        current_working_capital: Current period's working capital
-        previous_working_capital: Previous period's working capital
+        current_working_capital: 当前期间的营运资金
+        previous_working_capital: 前一期间的营运资金
 
     Returns:
-        float: Change in working capital (current - previous)
+        float: 营运资金变化（当前 - 前期）
     """
     return current_working_capital - previous_working_capital

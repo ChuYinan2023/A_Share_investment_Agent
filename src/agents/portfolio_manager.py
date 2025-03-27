@@ -2,18 +2,31 @@ from langchain_core.messages import HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from src.tools.openrouter_config import get_chat_completion
 import json
+import ast
+from src.utils.logging_config import setup_logger
 
 from src.agents.state import AgentState, show_agent_reasoning, show_workflow_status
 
 
 ##### Portfolio Management Agent #####
+# 设置日志记录器
+logger = setup_logger('portfolio_manager')
+
 def portfolio_management_agent(state: AgentState):
-    """Responsible for portfolio management"""
-    show_workflow_status("Portfolio Manager")
+    """负责投资组合管理和最终交易决策"""
+    logger.info("="*50)
+    logger.info("开始执行 投资组合管理员")
+    logger.info("="*50)
+    show_workflow_status("投资组合管理员")
     show_reasoning = state["metadata"]["show_reasoning"]
     portfolio = state["data"]["portfolio"]
+    
+    symbol = state["data"]["ticker"]
+    logger.info(f"开始为股票 {symbol} 制定投资组合决策...")
+    logger.info(f"当前投资组合: 现金={portfolio['cash']:.2f}, 持股={portfolio['stock']}")
 
     # Get the technical analyst, fundamentals agent, and risk management agent messages
+    logger.info("获取各分析师和风险管理员的信号...")
     technical_message = next(
         msg for msg in state["messages"] if msg.name == "technical_analyst_agent")
     fundamentals_message = next(
@@ -25,7 +38,22 @@ def portfolio_management_agent(state: AgentState):
     risk_message = next(
         msg for msg in state["messages"] if msg.name == "risk_management_agent")
 
+    # 解析风险管理信息
+    try:
+        logger.info("解析风险管理信息...")
+        risk_data = json.loads(risk_message.content)
+        logger.info(f"风险评分: {risk_data.get('risk_score', 'N/A')}/10, 建议交易行动: {risk_data.get('trading_action', 'N/A')}")
+        logger.info(f"最大仓位限制: {risk_data.get('max_position_size', 0):.2f}")
+    except Exception as e:
+        logger.warning(f"解析风险管理信息失败: {e}")
+        try:
+            risk_data = ast.literal_eval(risk_message.content)
+        except:
+            logger.error("无法解析风险管理信息，使用默认值")
+            risk_data = {"risk_score": 5, "trading_action": "hold", "max_position_size": 0}
+
     # Create the system message
+    logger.info("构建系统提示...")
     system_message = {
         "role": "system",
         "content": """You are a portfolio manager making final trading decisions.
@@ -77,6 +105,7 @@ def portfolio_management_agent(state: AgentState):
     }
 
     # Create the user message
+    logger.info("构建用户提示...")
     user_message = {
         "role": "user",
         "content": f"""Based on the team's analysis below, make your trading decision.
@@ -100,10 +129,12 @@ def portfolio_management_agent(state: AgentState):
     }
 
     # Get the completion from OpenRouter
+    logger.info("调用LLM获取投资组合决策...")
     result = get_chat_completion([system_message, user_message])
 
     # 如果API调用失败，使用默认的保守决策
     if result is None:
+        logger.warning("LLM API调用失败，使用默认保守决策")
         result = json.dumps({
             "action": "hold",
             "quantity": 0,
@@ -137,6 +168,28 @@ def portfolio_management_agent(state: AgentState):
             ],
             "reasoning": "API error occurred. Following risk management signal to hold. This is a conservative decision based on the mixed signals: bullish fundamentals and sentiment vs bearish valuation, with neutral technicals."
         })
+    
+    # 解析LLM返回的结果
+    try:
+        logger.info("解析LLM返回的决策...")
+        decision_data = json.loads(result)
+        logger.info(f"决策: {decision_data.get('action', 'N/A')}, 数量: {decision_data.get('quantity', 0)}, 置信度: {decision_data.get('confidence', 0):.2f}")
+    except Exception as e:
+        logger.warning(f"解析LLM返回结果失败: {e}")
+        try:
+            # 尝试从文本中提取JSON
+            start_idx = result.find('{')
+            end_idx = result.rfind('}') + 1
+            if start_idx >= 0 and end_idx > start_idx:
+                json_str = result[start_idx:end_idx]
+                decision_data = json.loads(json_str)
+                logger.info(f"成功从文本中提取决策: {decision_data.get('action', 'N/A')}")
+            else:
+                logger.error("无法从文本中提取JSON")
+                decision_data = {"action": "hold", "quantity": 0, "confidence": 0.5}
+        except:
+            logger.error("无法解析决策，使用默认值")
+            decision_data = {"action": "hold", "quantity": 0, "confidence": 0.5}
 
     # Create the portfolio management message
     message = HumanMessage(
@@ -146,9 +199,13 @@ def portfolio_management_agent(state: AgentState):
 
     # Print the decision if the flag is set
     if show_reasoning:
-        show_agent_reasoning(message.content, "Portfolio Management Agent")
+        show_agent_reasoning(message.content, "投资组合管理员")
 
-    show_workflow_status("Portfolio Manager", "completed")
+    show_workflow_status("投资组合管理员", "completed")
+    logger.info(f"最终决策: {decision_data.get('action', 'hold')}, 数量: {decision_data.get('quantity', 0)}")
+    logger.info("投资组合管理员分析完成")
+    logger.info("="*50)
+    
     return {
         "messages": state["messages"] + [message],
         "data": state["data"],
@@ -156,8 +213,8 @@ def portfolio_management_agent(state: AgentState):
 
 
 def format_decision(action: str, quantity: int, confidence: float, agent_signals: list, reasoning: str) -> dict:
-    """Format the trading decision into a standardized output format.
-    Think in English but output analysis in Chinese."""
+    """将交易决策格式化为标准化输出格式。
+    用英文思考但用中文输出分析结果。"""
 
     # 获取各个agent的信号
     fundamental_signal = next(
@@ -202,48 +259,59 @@ def format_decision(action: str, quantity: int, confidence: float, agent_signals
    信号: {signal_to_chinese(valuation_signal)}
    置信度: {valuation_signal['confidence']*100:.0f}%
    要点:
-   - DCF估值: {valuation_signal.get('reasoning', {}).get('dcf_analysis', {}).get('details', '无数据')}
-   - 所有者收益法: {valuation_signal.get('reasoning', {}).get('owner_earnings_analysis', {}).get('details', '无数据')}
+   - 内在价值: {valuation_signal.get('reasoning', {}).get('intrinsic_value', '无数据')}
+   - 当前价格: {valuation_signal.get('reasoning', {}).get('current_price', '无数据')}
+   - 安全边际: {valuation_signal.get('reasoning', {}).get('margin_of_safety', '无数据')}
 
 3. 技术分析 (权重25%):
    信号: {signal_to_chinese(technical_signal)}
    置信度: {technical_signal['confidence']*100:.0f}%
    要点:
-   - 趋势跟踪: ADX={technical_signal.get('strategy_signals', {}).get('trend_following', {}).get('metrics', {}).get('adx', '无数据'):.2f}
-   - 均值回归: RSI(14)={technical_signal.get('strategy_signals', {}).get('mean_reversion', {}).get('metrics', {}).get('rsi_14', '无数据'):.2f}
-   - 动量指标: 
-     * 1月动量={technical_signal.get('strategy_signals', {}).get('momentum', {}).get('metrics', {}).get('momentum_1m', '无数据'):.2%}
-     * 3月动量={technical_signal.get('strategy_signals', {}).get('momentum', {}).get('metrics', {}).get('momentum_3m', '无数据'):.2%}
-     * 6月动量={technical_signal.get('strategy_signals', {}).get('momentum', {}).get('metrics', {}).get('momentum_6m', '无数据'):.2%}
-   - 波动性: {technical_signal.get('strategy_signals', {}).get('volatility', {}).get('metrics', {}).get('historical_volatility', '无数据'):.2%}
+   - 趋势分析: {technical_signal.get('reasoning', {}).get('trend_analysis', '无数据')}
+   - 动量指标: {technical_signal.get('reasoning', {}).get('momentum_indicators', '无数据')}
+   - 支撑阻力: {technical_signal.get('reasoning', {}).get('support_resistance', '无数据')}
 
-4. 情绪分析 (权重10%):
+4. 情感分析 (权重10%):
    信号: {signal_to_chinese(sentiment_signal)}
    置信度: {sentiment_signal['confidence']*100:.0f}%
-   分析: {sentiment_signal.get('reasoning', '无详细分析')}
+   要点:
+   - 市场情绪: {sentiment_signal.get('reasoning', {}).get('market_sentiment', '无数据')}
+   - 新闻分析: {sentiment_signal.get('reasoning', {}).get('news_analysis', '无数据')}
 
-二、风险评估
-风险评分: {risk_signal.get('risk_score', '无数据')}/10
-主要指标:
-- 波动率: {risk_signal.get('risk_metrics', {}).get('volatility', '无数据')*100:.1f}%
-- 最大回撤: {risk_signal.get('risk_metrics', {}).get('max_drawdown', '无数据')*100:.1f}%
-- VaR(95%): {risk_signal.get('risk_metrics', {}).get('value_at_risk_95', '无数据')*100:.1f}%
-- 市场风险: {risk_signal.get('risk_metrics', {}).get('market_risk_score', '无数据')}/10
+5. 风险管理:
+   信号: {signal_to_chinese(risk_signal)}
+   风险评分: {risk_signal.get('risk_score', 'N/A')}/10
+   要点:
+   - 波动率: {risk_signal.get('risk_metrics', {}).get('volatility', 'N/A')}
+   - 最大回撤: {risk_signal.get('risk_metrics', {}).get('max_drawdown', 'N/A')}
+   - VaR(95%): {risk_signal.get('risk_metrics', {}).get('value_at_risk_95', 'N/A')}
 
-三、投资建议
-操作建议: {'买入' if action == 'buy' else '卖出' if action == 'sell' else '持有'}
-交易数量: {quantity}股
+二、决策摘要
+
+交易行动: {"买入" if action == "buy" else "卖出" if action == "sell" else "持有"}
+交易数量: {quantity}
 决策置信度: {confidence*100:.0f}%
 
-四、决策依据
+三、决策理由
+
 {reasoning}
 
-===================================="""
+====================================
+"""
+
+    # 转换交易行动为中文
+    action_chinese = "买入" if action == "buy" else "卖出" if action == "sell" else "持有"
+
+    # 创建简短摘要
+    summary = f"""交易决策: {action_chinese} {quantity} 股，置信度 {confidence*100:.0f}%
+理由: {reasoning[:100]}..."""
 
     return {
         "action": action,
+        "action_chinese": action_chinese,
         "quantity": quantity,
         "confidence": confidence,
-        "agent_signals": agent_signals,
-        "分析报告": detailed_analysis
+        "reasoning": reasoning,
+        "detailed_analysis": detailed_analysis,
+        "summary": summary
     }

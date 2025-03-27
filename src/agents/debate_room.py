@@ -3,20 +3,26 @@ from src.agents.state import AgentState, show_agent_reasoning, show_workflow_sta
 from src.tools.openrouter_config import get_chat_completion
 import json
 import ast
-import logging
+from src.utils.logging_config import setup_logger
 
-# 获取日志记录器
-logger = logging.getLogger('debate_room')
+# 设置日志记录器
+logger = setup_logger('debate_room')
 
 
 def debate_room_agent(state: AgentState):
-    """Facilitates debate between bull and bear researchers to reach a balanced conclusion."""
-    show_workflow_status("Debate Room")
+    """辩论室代理负责组织看多和看空研究员之间的辩论，得出平衡的结论"""
+    logger.info("="*50)
+    logger.info("开始执行 辩论室代理")
+    logger.info("="*50)
+    show_workflow_status("辩论室")
     show_reasoning = state["metadata"]["show_reasoning"]
-    logger.info("开始分析研究员观点并进行辩论...")
+    
+    symbol = state["data"]["ticker"]
+    logger.info(f"开始对股票 {symbol} 的研究员观点进行辩论分析...")
 
     # 收集所有研究员信息 - 向前兼容设计（添加防御性检查）
     researcher_messages = {}
+    logger.info("开始收集研究员信息...")
     for msg in state["messages"]:
         # 添加防御性检查，确保 msg 和 msg.name 不为 None
         if msg is None:
@@ -26,6 +32,8 @@ def debate_room_agent(state: AgentState):
         if isinstance(msg.name, str) and msg.name.startswith("researcher_") and msg.name.endswith("_agent"):
             researcher_messages[msg.name] = msg
             logger.debug(f"收集到研究员信息: {msg.name}")
+    
+    logger.info(f"共收集到 {len(researcher_messages)} 个研究员的信息")
 
     # 确保至少有看多和看空两个研究员
     if "researcher_bull_agent" not in researcher_messages or "researcher_bear_agent" not in researcher_messages:
@@ -36,6 +44,7 @@ def debate_room_agent(state: AgentState):
 
     # 处理研究员数据
     researcher_data = {}
+    logger.info("开始解析研究员数据...")
     for name, msg in researcher_messages.items():
         # 添加防御性检查，确保 msg.content 不为 None
         if not hasattr(msg, 'content') or msg.content is None:
@@ -63,21 +72,26 @@ def debate_room_agent(state: AgentState):
     bull_thesis = researcher_data["researcher_bull_agent"]
     bear_thesis = researcher_data["researcher_bear_agent"]
     logger.info(
-        f"已获取看多观点(置信度: {bull_thesis.get('confidence', 0)})和看空观点(置信度: {bear_thesis.get('confidence', 0)})")
+        f"已获取看多观点(置信度: {bull_thesis.get('confidence', 0):.2f})和看空观点(置信度: {bear_thesis.get('confidence', 0):.2f})")
 
     # 比较置信度级别
     bull_confidence = bull_thesis.get("confidence", 0)
     bear_confidence = bear_thesis.get("confidence", 0)
+    logger.info(f"看多置信度: {bull_confidence:.2f}, 看空置信度: {bear_confidence:.2f}")
+    logger.info(f"置信度差异: {bull_confidence - bear_confidence:.2f}")
 
     # 分析辩论观点
+    logger.info("开始整理辩论观点...")
     debate_summary = []
     debate_summary.append("Bullish Arguments:")
     for point in bull_thesis.get("thesis_points", []):
         debate_summary.append(f"+ {point}")
+        logger.debug(f"看多论点: {point}")
 
     debate_summary.append("\nBearish Arguments:")
     for point in bear_thesis.get("thesis_points", []):
         debate_summary.append(f"- {point}")
+        logger.debug(f"看空论点: {point}")
 
     # 收集所有研究员的论点，准备发给 LLM
     all_perspectives = {}
@@ -137,7 +151,7 @@ def debate_room_agent(state: AgentState):
                     llm_score = float(llm_analysis.get("score", 0))
                     # 确保分数在有效范围内
                     llm_score = max(min(llm_score, 1.0), -1.0)
-                    logger.info(f"成功解析 LLM 回复，评分: {llm_score}")
+                    logger.info(f"成功解析 LLM 回复，评分: {llm_score:.2f}")
                     logger.debug(
                         f"LLM 分析内容: {llm_analysis.get('analysis', '未提供分析')[:100]}...")
             except Exception as e:
@@ -152,9 +166,11 @@ def debate_room_agent(state: AgentState):
 
     # 计算混合置信度差异
     confidence_diff = bull_confidence - bear_confidence
+    logger.info(f"原始置信度差异: {confidence_diff:.4f}")
 
     # 默认 LLM 权重为 30%
     llm_weight = 0.3
+    logger.info(f"LLM 权重: {llm_weight:.2f}, LLM 评分: {llm_score:.4f}")
 
     # 将 LLM 评分（-1 到 1范围）转换为与 confidence_diff 相同的比例
     # 计算混合置信度差异
@@ -169,16 +185,19 @@ def debate_room_agent(state: AgentState):
         final_signal = "neutral"
         reasoning = "Balanced debate with strong arguments on both sides"
         confidence = max(bull_confidence, bear_confidence)
+        logger.info(f"最终信号: 中性 (差异小于0.1)")
     elif mixed_confidence_diff > 0:  # 看多胜出
         final_signal = "bullish"
         reasoning = "Bullish arguments more convincing"
         confidence = bull_confidence
+        logger.info(f"最终信号: 看多 (混合差异为正)")
     else:  # 看空胜出
         final_signal = "bearish"
         reasoning = "Bearish arguments more convincing"
         confidence = bear_confidence
+        logger.info(f"最终信号: 看空 (混合差异为负)")
 
-    logger.info(f"最终投资信号: {final_signal}, 置信度: {confidence}")
+    logger.info(f"最终投资信号: {final_signal}, 置信度: {confidence:.2f}")
 
     # 构建返回消息，包含 LLM 分析
     message_content = {
@@ -201,14 +220,13 @@ def debate_room_agent(state: AgentState):
     )
 
     if show_reasoning:
-        show_agent_reasoning(message_content, "Debate Room")
+        show_agent_reasoning(message_content, "辩论室")
 
-    show_workflow_status("Debate Room", "completed")
+    show_workflow_status("辩论室", "completed")
     logger.info("辩论室分析完成")
+    logger.info("="*50)
+    
     return {
         "messages": state["messages"] + [message],
-        "data": {
-            **state["data"],
-            "debate_analysis": message_content
-        }
+        "data": state["data"],
     }
