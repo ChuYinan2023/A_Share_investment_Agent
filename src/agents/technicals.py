@@ -8,90 +8,169 @@ from src.agents.state import AgentState, show_agent_reasoning, show_workflow_sta
 import json
 import pandas as pd
 import numpy as np
+from datetime import datetime
 
 from src.tools.api import prices_to_df
+from src.utils.logging_config import setup_logger
+
+# 设置日志记录
+logger = setup_logger('technical_analyst')
 
 
 ##### Technical Analyst #####
 def technical_analyst_agent(state: AgentState):
     """
-    Sophisticated technical analysis system that combines multiple trading strategies:
-    1. Trend Following
-    2. Mean Reversion
-    3. Momentum
-    4. Volatility Analysis
-    5. Statistical Arbitrage Signals
+    复杂的技术分析系统，结合多种交易策略：
+    1. 趋势跟踪
+    2. 均值回归
+    3. 动量策略
+    4. 波动性分析
+    5. 统计套利信号
     """
-    show_workflow_status("Technical Analyst")
+    logger.info("="*50)
+    logger.info("开始执行 技术分析师")
+    logger.info("="*50)
+    show_workflow_status("技术分析师")
     show_reasoning = state["metadata"]["show_reasoning"]
     data = state["data"]
     prices = data["prices"]
     prices_df = prices_to_df(prices)
+    
+    # 记录输入数据
+    ticker = data.get("ticker", "未知")
+    logger.info(f"开始对 {ticker} 进行技术分析...")
+    logger.info(f"价格数据概览:")
+    logger.info(f"- 数据点数量: {len(prices_df)}")
+    
+    # 安全地获取日期信息，确保是字符串格式
+    try:
+        start_date = prices_df.index[0]
+        end_date = prices_df.index[-1]
+        
+        # 检查日期类型并格式化
+        if hasattr(start_date, 'strftime'):
+            start_date_str = start_date.strftime('%Y-%m-%d')
+        else:
+            start_date_str = str(start_date)
+            
+        if hasattr(end_date, 'strftime'):
+            end_date_str = end_date.strftime('%Y-%m-%d')
+        else:
+            end_date_str = str(end_date)
+            
+        logger.info(f"- 起始日期: {start_date_str}")
+        logger.info(f"- 结束日期: {end_date_str}")
+    except Exception as e:
+        logger.warning(f"获取日期信息时出错: {str(e)}")
+        logger.info("- 起始日期: 未知")
+        logger.info("- 结束日期: 未知")
+    
+    # 记录价格信息
+    try:
+        logger.info(f"- 价格范围: {prices_df['close'].min():.2f} - {prices_df['close'].max():.2f}")
+        logger.info(f"- 最新收盘价: {prices_df['close'].iloc[-1]:.2f}")
+    except Exception as e:
+        logger.warning(f"获取价格信息时出错: {str(e)}")
+    
+    # 记录分析过程
+    logger.info("开始计算技术指标...")
 
     # Initialize confidence variable
     confidence = 0.0
 
     # Calculate indicators
     # 1. MACD (Moving Average Convergence Divergence)
+    logger.info("计算 MACD 指标...")
     macd_line, signal_line = calculate_macd(prices_df)
+    logger.info(f"- MACD 最新值: {macd_line.iloc[-1]:.4f}")
+    logger.info(f"- Signal Line 最新值: {signal_line.iloc[-1]:.4f}")
 
     # 2. RSI (Relative Strength Index)
+    logger.info("计算 RSI 指标...")
     rsi = calculate_rsi(prices_df)
+    logger.info(f"- RSI 最新值: {rsi.iloc[-1]:.2f}")
+    rsi_status = "超卖" if rsi.iloc[-1] < 30 else "超买" if rsi.iloc[-1] > 70 else "中性"
+    logger.info(f"- RSI 状态: {rsi_status}")
 
     # 3. Bollinger Bands (Bollinger Bands)
+    logger.info("计算布林带...")
     upper_band, lower_band = calculate_bollinger_bands(prices_df)
+    current_price = prices_df['close'].iloc[-1]
+    logger.info(f"- 上轨: {upper_band.iloc[-1]:.2f}")
+    logger.info(f"- 下轨: {lower_band.iloc[-1]:.2f}")
+    logger.info(f"- 当前价格: {current_price:.2f}")
+    bb_position = ((current_price - lower_band.iloc[-1]) / 
+                  (upper_band.iloc[-1] - lower_band.iloc[-1])) * 100
+    logger.info(f"- 价格在布林带中的位置: {bb_position:.2f}%")
 
     # 4. OBV (On-Balance Volume)
+    logger.info("计算 OBV 指标...")
     obv = calculate_obv(prices_df)
+    obv_slope = obv.diff().iloc[-5:].mean()
+    logger.info(f"- OBV 斜率: {obv_slope:.2f}")
 
     # Generate individual signals
+    logger.info("生成各指标信号...")
     signals = []
 
     # MACD signal
     if macd_line.iloc[-2] < signal_line.iloc[-2] and macd_line.iloc[-1] > signal_line.iloc[-1]:
         signals.append('bullish')
+        logger.info("- MACD: 看涨 (金叉)")
     elif macd_line.iloc[-2] > signal_line.iloc[-2] and macd_line.iloc[-1] < signal_line.iloc[-1]:
         signals.append('bearish')
+        logger.info("- MACD: 看跌 (死叉)")
     else:
         signals.append('neutral')
+        logger.info("- MACD: 中性 (无明显交叉)")
 
     # RSI signal
     if rsi.iloc[-1] < 30:
         signals.append('bullish')
+        logger.info("- RSI: 看涨 (超卖)")
     elif rsi.iloc[-1] > 70:
         signals.append('bearish')
+        logger.info("- RSI: 看跌 (超买)")
     else:
         signals.append('neutral')
+        logger.info("- RSI: 中性")
 
     # Bollinger Bands signal
-    current_price = prices_df['close'].iloc[-1]
     if current_price < lower_band.iloc[-1]:
         signals.append('bullish')
+        logger.info("- 布林带: 看涨 (价格低于下轨)")
     elif current_price > upper_band.iloc[-1]:
         signals.append('bearish')
+        logger.info("- 布林带: 看跌 (价格高于上轨)")
     else:
         signals.append('neutral')
+        logger.info("- 布林带: 中性 (价格在通道内)")
 
     # OBV signal
-    obv_slope = obv.diff().iloc[-5:].mean()
     if obv_slope > 0:
         signals.append('bullish')
+        logger.info("- OBV: 看涨 (成交量支撑上涨)")
     elif obv_slope < 0:
         signals.append('bearish')
+        logger.info("- OBV: 看跌 (成交量支撑下跌)")
     else:
         signals.append('neutral')
+        logger.info("- OBV: 中性")
 
     # Calculate price drop
     price_drop = (prices_df['close'].iloc[-1] -
                   prices_df['close'].iloc[-5]) / prices_df['close'].iloc[-5]
+    logger.info(f"近5日价格变动: {price_drop*100:.2f}%")
 
     # Add price drop signal
     if price_drop < -0.05 and rsi.iloc[-1] < 40:  # 5% drop and RSI below 40
         signals.append('bullish')
         confidence += 0.2  # Increase confidence for oversold conditions
+        logger.info("- 价格急跌信号: 看涨 (5%跌幅且RSI<40，超卖)")
     elif price_drop < -0.03 and rsi.iloc[-1] < 45:  # 3% drop and RSI below 45
         signals.append('bullish')
         confidence += 0.1
+        logger.info("- 价格急跌信号: 看涨 (3%跌幅且RSI<45，轻度超卖)")
 
     # Add reasoning collection
     reasoning = {
@@ -117,16 +196,22 @@ def technical_analyst_agent(state: AgentState):
     bullish_signals = signals.count('bullish')
     bearish_signals = signals.count('bearish')
 
+    logger.info(f"信号统计: 看涨={bullish_signals}, 看跌={bearish_signals}, 中性={signals.count('neutral')}")
+
     if bullish_signals > bearish_signals:
         overall_signal = 'bullish'
+        logger.info("基本指标综合信号: 看涨")
     elif bearish_signals > bullish_signals:
         overall_signal = 'bearish'
+        logger.info("基本指标综合信号: 看跌")
     else:
         overall_signal = 'neutral'
+        logger.info("基本指标综合信号: 中性")
 
     # Calculate confidence level based on the proportion of indicators agreeing
     total_signals = len(signals)
     confidence = max(bullish_signals, bearish_signals) / total_signals
+    logger.info(f"基本指标置信度: {confidence*100:.2f}%")
 
     # Generate the message content
     message_content = {
@@ -140,20 +225,37 @@ def technical_analyst_agent(state: AgentState):
         }
     }
 
+    logger.info("开始执行高级技术分析策略...")
+    
     # 1. Trend Following Strategy
+    logger.info("计算趋势跟踪信号...")
     trend_signals = calculate_trend_signals(prices_df)
+    logger.info(f"- 趋势跟踪信号: {trend_signals['signal']}")
+    logger.info(f"- 趋势跟踪置信度: {trend_signals['confidence']*100:.2f}%")
 
     # 2. Mean Reversion Strategy
+    logger.info("计算均值回归信号...")
     mean_reversion_signals = calculate_mean_reversion_signals(prices_df)
+    logger.info(f"- 均值回归信号: {mean_reversion_signals['signal']}")
+    logger.info(f"- 均值回归置信度: {mean_reversion_signals['confidence']*100:.2f}%")
 
     # 3. Momentum Strategy
+    logger.info("计算动量信号...")
     momentum_signals = calculate_momentum_signals(prices_df)
+    logger.info(f"- 动量信号: {momentum_signals['signal']}")
+    logger.info(f"- 动量置信度: {momentum_signals['confidence']*100:.2f}%")
 
     # 4. Volatility Strategy
+    logger.info("计算波动性信号...")
     volatility_signals = calculate_volatility_signals(prices_df)
+    logger.info(f"- 波动性信号: {volatility_signals['signal']}")
+    logger.info(f"- 波动性置信度: {volatility_signals['confidence']*100:.2f}%")
 
     # 5. Statistical Arbitrage Signals
+    logger.info("计算统计套利信号...")
     stat_arb_signals = calculate_stat_arb_signals(prices_df)
+    logger.info(f"- 统计套利信号: {stat_arb_signals['signal']}")
+    logger.info(f"- 统计套利置信度: {stat_arb_signals['confidence']*100:.2f}%")
 
     # Combine all signals using a weighted ensemble approach
     strategy_weights = {
@@ -163,6 +265,11 @@ def technical_analyst_agent(state: AgentState):
         'volatility': 0.15,
         'stat_arb': 0.05
     }
+    
+    logger.info("组合所有策略信号...")
+    logger.info(f"策略权重: 趋势={strategy_weights['trend']}, 均值回归={strategy_weights['mean_reversion']}, " +
+               f"动量={strategy_weights['momentum']}, 波动性={strategy_weights['volatility']}, " +
+               f"统计套利={strategy_weights['stat_arb']}")
 
     combined_signal = weighted_signal_combination({
         'trend': trend_signals,
@@ -171,6 +278,9 @@ def technical_analyst_agent(state: AgentState):
         'volatility': volatility_signals,
         'stat_arb': stat_arb_signals
     }, strategy_weights)
+    
+    logger.info(f"最终综合信号: {combined_signal['signal']}")
+    logger.info(f"最终综合置信度: {combined_signal['confidence']*100:.2f}%")
 
     # Generate detailed analysis report
     analysis_report = {
@@ -223,7 +333,7 @@ def technical_analyst_agent(state: AgentState):
 
 def calculate_trend_signals(prices_df):
     """
-    Advanced trend following strategy using multiple timeframes and indicators
+    高级趋势跟踪策略，使用多个时间框架和指标
     """
     # Calculate EMAs for multiple timeframes
     ema_8 = calculate_ema(prices_df, 8)
@@ -266,7 +376,7 @@ def calculate_trend_signals(prices_df):
 
 def calculate_mean_reversion_signals(prices_df):
     """
-    Mean reversion strategy using statistical measures and Bollinger Bands
+    均值回归策略，使用统计措施和布林带
     """
     # Calculate z-score of price relative to moving average
     ma_50 = prices_df['close'].rolling(window=50).mean()
@@ -310,7 +420,7 @@ def calculate_mean_reversion_signals(prices_df):
 
 def calculate_momentum_signals(prices_df):
     """
-    Multi-factor momentum strategy with conservative settings
+    多因素动量策略，采用保守设置
     """
     # Price momentum with adjusted min_periods
     returns = prices_df['close'].pct_change()
@@ -361,7 +471,7 @@ def calculate_momentum_signals(prices_df):
 
 def calculate_volatility_signals(prices_df):
     """
-    Optimized volatility calculation with shorter lookback periods
+    优化的波动性计算，使用较短的回顾期
     """
     returns = prices_df['close'].pct_change()
 
@@ -414,7 +524,7 @@ def calculate_volatility_signals(prices_df):
 
 def calculate_stat_arb_signals(prices_df):
     """
-    Optimized statistical arbitrage signals with shorter lookback periods
+    优化的统计套利信号，使用较短的回顾期
     """
     # Calculate price distribution statistics
     returns = prices_df['close'].pct_change()
@@ -456,7 +566,7 @@ def calculate_stat_arb_signals(prices_df):
 
 def weighted_signal_combination(signals, weights):
     """
-    Combines multiple trading signals using a weighted approach
+    使用加权方法组合多个交易信号
     """
     # Convert signals to numeric values
     signal_values = {
@@ -638,7 +748,7 @@ def calculate_ichimoku(df: pd.DataFrame) -> Dict[str, pd.Series]:
 
 def calculate_atr(df: pd.DataFrame, period: int = 14, min_periods: int = 7) -> pd.Series:
     """
-    Optimized ATR calculation with minimum periods parameter
+    优化的ATR计算，增加最小周期参数
 
     Args:
         df: DataFrame with OHLC data
@@ -660,7 +770,7 @@ def calculate_atr(df: pd.DataFrame, period: int = 14, min_periods: int = 7) -> p
 
 def calculate_hurst_exponent(price_series: pd.Series, max_lag: int = 10) -> float:
     """
-    Optimized Hurst exponent calculation with shorter lookback and better error handling
+    优化的Hurst指数计算，使用较短的回顾期和更好的错误处理
 
     Args:
         price_series: Array-like price data
