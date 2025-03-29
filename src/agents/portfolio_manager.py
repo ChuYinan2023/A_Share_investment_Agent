@@ -4,6 +4,7 @@ from src.tools.openrouter_config import get_chat_completion
 import json
 import ast
 from src.utils.logging_config import setup_logger
+import re
 
 from src.agents.state import AgentState, show_agent_reasoning, show_workflow_status
 
@@ -43,15 +44,50 @@ def portfolio_management_agent(state: AgentState):
         logger.info("解析风险管理信息...")
         risk_data = json.loads(risk_message.content)
         logger.info(f"风险评分: {risk_data.get('risk_score', 'N/A')}/10, 建议交易行动: {risk_data.get('trading_action', 'N/A')}")
-        logger.info(f"最大仓位限制: {risk_data.get('max_position_size', 0):.2f}")
+        logger.info(f"最大仓位限制(金额): {risk_data.get('max_position_size', 0):.2f}元")
+        
+        # 获取当前股价 - 从prices列表的最后一个元素获取close价格
+        if state["data"].get("prices") and len(state["data"]["prices"]) > 0:
+            current_price = state["data"]["prices"][-1]["close"]
+            logger.info(f"当前股价: {current_price:.2f}元")
+            
+            # 计算最大可购买股数（按100股为1手向下取整）
+            max_shares_raw = int(risk_data.get('max_position_size', 0) / current_price) if current_price > 0 else 0
+            max_shares = (max_shares_raw // 100) * 100  # 确保是100的整数倍
+            logger.info(f"最大可购买股数: {max_shares}股 ({max_shares // 100}手)")
+            
+            # 确保不超过可用现金
+            max_shares_by_cash_raw = int(portfolio['cash'] / current_price) if current_price > 0 else 0
+            max_shares_by_cash = (max_shares_by_cash_raw // 100) * 100  # 确保是100的整数倍
+            max_shares = min(max_shares, max_shares_by_cash)
+            logger.info(f"考虑可用现金后的最大可购买股数: {max_shares}股 ({max_shares // 100}手)")
+            
+            # 更新风险数据
+            risk_data['max_shares'] = max_shares
+        else:
+            logger.warning("无法获取当前股价，设置最大可购买股数为0")
+            risk_data['max_shares'] = 0
     except Exception as e:
         logger.warning(f"解析风险管理信息失败: {e}")
         try:
             risk_data = ast.literal_eval(risk_message.content)
+            
+            # 获取当前股价
+            if state["data"].get("prices") and len(state["data"]["prices"]) > 0:
+                current_price = state["data"]["prices"][-1]["close"]
+                
+                # 计算最大可购买股数（按100股为1手向下取整）
+                max_shares_raw = int(risk_data.get('max_position_size', 0) / current_price) if current_price > 0 else 0
+                max_shares_by_cash_raw = int(portfolio['cash'] / current_price) if current_price > 0 else 0
+                max_shares = min(max_shares_raw, max_shares_by_cash_raw)
+                max_shares = (max_shares // 100) * 100  # 确保是100的整数倍
+                risk_data['max_shares'] = max_shares
+            else:
+                risk_data['max_shares'] = 0
         except:
             logger.error("无法解析风险管理信息，使用默认值")
-            risk_data = {"risk_score": 5, "trading_action": "hold", "max_position_size": 0}
-
+            risk_data = {"risk_score": 5, "trading_action": "hold", "max_position_size": 0, "max_shares": 0}
+    
     # Create the system message
     logger.info("构建系统提示...")
     system_message = {
@@ -120,12 +156,16 @@ def portfolio_management_agent(state: AgentState):
             Portfolio:
             Cash: {portfolio['cash']:.2f}
             Current Position: {portfolio['stock']} shares
+            Current Stock Price: {(state["data"]["prices"][-1]["close"] if state["data"].get("prices") and len(state["data"]["prices"]) > 0 else 0):.2f}
+            
+            Maximum Shares You Can Buy (based on risk limits and available cash): {risk_data.get('max_shares', 0)} shares
 
             Only include the action, quantity, reasoning, confidence, and agent_signals in your output as JSON.  Do not include any JSON markdown.
 
             Remember, the action must be either buy, sell, or hold.
             You can only buy if you have available cash.
-            You can only sell if you have shares in the portfolio to sell."""
+            You can only sell if you have shares in the portfolio to sell.
+            For buy actions, the quantity (in shares) must not exceed {risk_data.get('max_shares', 0)} shares."""
     }
 
     # Get the completion from OpenRouter
@@ -169,28 +209,71 @@ def portfolio_management_agent(state: AgentState):
             "reasoning": "API error occurred. Following risk management signal to hold. This is a conservative decision based on the mixed signals: bullish fundamentals and sentiment vs bearish valuation, with neutral technicals."
         })
     
-    # 解析LLM返回的结果
+    # 解析LLM返回的决策
+    logger.info("解析LLM返回的决策...")
     try:
-        logger.info("解析LLM返回的决策...")
-        decision_data = json.loads(result)
-        logger.info(f"决策: {decision_data.get('action', 'N/A')}, 数量: {decision_data.get('quantity', 0)}, 置信度: {decision_data.get('confidence', 0):.2f}")
-    except Exception as e:
+        decision = json.loads(result)
+        action = decision.get("action", "hold").lower()
+        quantity = decision.get("quantity", 0)
+        
+        # 确保交易数量是100的整数倍
+        if quantity > 0:
+            quantity = (quantity // 100) * 100
+            if quantity == 0:  # 如果原始数量小于100，但大于0，则设为100
+                quantity = 100
+                
+        reasoning = decision.get("reasoning", "No reasoning provided")
+        confidence = decision.get("confidence", 0)
+        agent_signals = decision.get("agent_signals", {})
+        
+        # 确保数量不超过最大限制
+        if action == "buy":
+            max_shares = risk_data.get('max_shares', 0)
+            if quantity > max_shares:
+                logger.warning(f"调整购买数量从 {quantity} 到最大限制 {max_shares}")
+                quantity = max_shares
+        elif action == "sell":
+            max_sell = portfolio['stock']
+            if quantity > max_sell:
+                logger.warning(f"调整卖出数量从 {quantity} 到持仓数量 {max_sell}")
+                quantity = max_sell
+                
+        # 确保最终数量是100的整数倍
+        quantity = (quantity // 100) * 100
+                
+        logger.info(f"解析成功: 行动={action}, 数量={quantity}股 ({quantity // 100}手), 置信度={confidence}")
+    except json.JSONDecodeError as e:
         logger.warning(f"解析LLM返回结果失败: {e}")
-        try:
-            # 尝试从文本中提取JSON
-            start_idx = result.find('{')
-            end_idx = result.rfind('}') + 1
-            if start_idx >= 0 and end_idx > start_idx:
-                json_str = result[start_idx:end_idx]
-                decision_data = json.loads(json_str)
-                logger.info(f"成功从文本中提取决策: {decision_data.get('action', 'N/A')}")
+        # 尝试从文本中提取决策
+        action = "hold"
+        quantity = 0
+        
+        if "buy" in result.lower():
+            action = "buy"
+            # 尝试提取数量，并确保是100的整数倍
+            quantity_match = re.search(r"quantity[\"']?\s*:\s*(\d+)", result)
+            if quantity_match:
+                quantity = int(quantity_match.group(1))
+                quantity = (quantity // 100) * 100
+                if quantity == 0 and int(quantity_match.group(1)) > 0:
+                    quantity = 100
             else:
-                logger.error("无法从文本中提取JSON")
-                decision_data = {"action": "hold", "quantity": 0, "confidence": 0.5}
-        except:
-            logger.error("无法解析决策，使用默认值")
-            decision_data = {"action": "hold", "quantity": 0, "confidence": 0.5}
-
+                # 使用最大可购买数量
+                quantity = risk_data.get('max_shares', 0)
+        elif "sell" in result.lower():
+            action = "sell"
+            # 尝试提取数量，并确保是100的整数倍
+            quantity_match = re.search(r"quantity[\"']?\s*:\s*(\d+)", result)
+            if quantity_match:
+                quantity = int(quantity_match.group(1))
+                quantity = min(quantity, portfolio['stock'])
+                quantity = (quantity // 100) * 100
+            else:
+                # 卖出全部持仓
+                quantity = (portfolio['stock'] // 100) * 100
+                
+        logger.info(f"成功从文本中提取决策: {action}")
+    
     # Create the portfolio management message
     message = HumanMessage(
         content=result,
@@ -202,7 +285,7 @@ def portfolio_management_agent(state: AgentState):
         show_agent_reasoning(message.content, "投资组合管理员")
 
     show_workflow_status("投资组合管理员", "completed")
-    logger.info(f"最终决策: {decision_data.get('action', 'hold')}, 数量: {decision_data.get('quantity', 0)}")
+    logger.info(f"最终决策: {action}, 数量={quantity}股 ({quantity // 100}手)")
     logger.info("投资组合管理员分析完成")
     logger.info("="*50)
     

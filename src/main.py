@@ -17,6 +17,7 @@ import akshare as ak
 import pandas as pd
 
 from src.utils.output_logger import OutputLogger
+from src.utils.logging_config import clean_all_log_files
 import sys
 
 # Initialize output logging
@@ -26,6 +27,9 @@ sys.stdout = OutputLogger()
 
 ##### Run the Hedge Fund #####
 def run_hedge_fund(ticker: str, start_date: str, end_date: str, portfolio: dict, show_reasoning: bool = False, num_of_news: int = 5):
+    # 清空所有代理的日志文件，确保每次分析都是新的日志
+    clean_all_log_files()
+    
     final_state = app.invoke(
         {
             "messages": [
